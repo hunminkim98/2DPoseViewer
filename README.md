@@ -4,12 +4,12 @@ A PySide6-based tool for visualizing 2D pose estimation data from various pose e
 
 ## Features
 
-- 📊 **Multi-model Support**: BODY_25, COCO_17, HALPE_26, COCO_133, and more
-- 🎨 **Rich Visualization**: Customizable keypoint size, skeleton width, and opacity
-- 🎬 **Playback Controls**: Frame-by-frame navigation with adjustable FPS
-- 🔍 **Interactive Selection**: Click on bounding boxes to select individual persons
-- 📈 **Filtering**: Apply Butterworth, Gaussian, or Median filters to smooth pose data
-- 🖱️ **Hover Effects**: Visual feedback when hovering over detected persons
+- **Multi-model Support**: BODY_25, COCO_17, HALPE_26, COCO_133, and more
+- **Rich Visualization**: Customizable keypoint size, skeleton width, and opacity
+- **Playback Controls**: Frame-by-frame navigation with adjustable FPS
+- **Interactive Selection**: Click on bounding boxes to select individual persons
+- **Filtering**: Apply Butterworth, Gaussian, or Median filters to smooth pose data
+- **Hover Effects**: Visual feedback when hovering over detected persons
 
 ## Installation
 
