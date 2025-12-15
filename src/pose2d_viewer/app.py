@@ -23,6 +23,8 @@ from .models import Keypoint, Person, FrameData
 from .canvas import PoseCanvas
 from .controls import PlaybackBar, ControlPanel
 from .constants import SKELETON_MODELS
+from .stroke_detector import detect_rowing_strokes
+from .stroke_dialog import StrokeAnalysisDialog
 
 
 class PoseViewerWindow(QMainWindow):
@@ -39,6 +41,9 @@ class PoseViewerWindow(QMainWindow):
         self.all_frames_data: List[FrameData] = []
         self.filtered_frames_data: Optional[List[FrameData]] = None
         self.is_filtered: bool = False
+        
+        # 분석 다이얼로그 참조 보관 (Modeless용)
+        self.analysis_dialog = None
         
         self._setup_ui()
         self._connect_signals()
@@ -134,6 +139,13 @@ class PoseViewerWindow(QMainWindow):
         exit_action = file_menu.addAction("종료")
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
+        
+        # 분석 메뉴
+        analysis_menu = menubar.addMenu("분석")
+        
+        rowing_action = analysis_menu.addAction("조정")
+        rowing_action.setShortcut("Ctrl+R")
+        rowing_action.triggered.connect(self._analyze_rowing_stroke)
         
     def _connect_signals(self):
         # 컨트롤 패널 시그널
@@ -231,6 +243,10 @@ class PoseViewerWindow(QMainWindow):
         
         self.canvas.set_frame_data(frame_data)
         self.playback_bar.set_current_frame(self.current_frame)
+        
+        # 분석 다이얼로그가 열려있으면 현재 프레임 동기화
+        if self.analysis_dialog is not None and self.analysis_dialog.isVisible():
+            self.analysis_dialog.update_current_frame(self.current_frame)
             
     def _parse_frame_data(self, data: dict, frame_num: int) -> FrameData:
         people = []
@@ -434,6 +450,87 @@ class PoseViewerWindow(QMainWindow):
         self.control_panel.set_filter_applied(False)
         self._load_current_frame()
         self.status_bar.showMessage("✓ 원본 데이터로 복원됨")
+    
+    def _analyze_rowing_stroke(self):
+        """조정 스트로크 분석 실행"""
+        if not self.all_frames_data:
+            self.status_bar.showMessage("⚠ 먼저 데이터를 로드해주세요")
+            return
+        
+        self.status_bar.showMessage("조정 스트로크 분석 중...")
+        QApplication.processEvents()
+        
+        try:
+            # 현재 표시중인 데이터 사용 (필터링 적용시 필터링된 데이터)
+            if self.is_filtered and self.filtered_frames_data:
+                frames_to_analyze = self.filtered_frames_data
+                data_source = "필터링된 데이터"
+            else:
+                frames_to_analyze = self.all_frames_data
+                data_source = "원본 데이터"
+            
+            # 최대 사람 수 확인
+            max_people = 0
+            for frame in frames_to_analyze:
+                max_people = max(max_people, len(frame.people))
+            
+            if max_people == 0:
+                self.status_bar.showMessage(f"⚠ 분석할 사람 데이터가 없습니다 ({data_source})")
+                return
+            
+            # 현재 스켈레톤 모델
+            model_name = self.control_panel.model_combo.currentText()
+            
+            # FPS 가져오기
+            fps = self.playback_bar.get_fps()
+            
+            results = {}
+            valid_count = 0
+            
+            # 모든 사람에 대해 분석 실행
+            import numpy as np  # numpy 필요
+            
+            for person_idx in range(max_people):
+                result = detect_rowing_strokes(
+                    frames_data=frames_to_analyze,
+                    person_idx=person_idx,
+                    model_name=model_name,
+                    fps=fps,
+                    side="both"
+                )
+                
+                # 유효한 데이터가 있고 스트로크가 1회 이상 감지된 경우만 포함
+                if (result.normalized_wrist_data is not None and 
+                    len(result.normalized_wrist_data) > 0 and 
+                    not np.all(np.isnan(result.normalized_wrist_data)) and
+                    result.stroke_count >= 1):  # 스트로크 1회 이상만
+                    
+                    results[person_idx] = result
+                    valid_count += 1
+            
+            if valid_count == 0:
+                self.status_bar.showMessage(f"⚠ 스트로크가 감지된 사람이 없습니다 ({data_source})")
+                return
+            
+            # 기존 다이얼로그가 있으면 닫기
+            if self.analysis_dialog is not None:
+                self.analysis_dialog.close()
+            
+            # 다이얼로그 표시 (Modeless)
+            self.analysis_dialog = StrokeAnalysisDialog(self)
+            self.analysis_dialog.set_results(results)
+            self.analysis_dialog.go_to_frame.connect(self._go_to_frame)
+            
+            self.status_bar.showMessage(
+                f"✓ 분석 완료 ({valid_count}명): Person {', '.join(map(str, results.keys()))}"
+            )
+            
+            self.analysis_dialog.show()
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.status_bar.showMessage(f"⚠ 분석 오류: {e}")
 
 
 def main():

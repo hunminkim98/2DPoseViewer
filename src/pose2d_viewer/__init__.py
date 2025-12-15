@@ -23,6 +23,15 @@ def __getattr__(name):
     elif name == "PoseViewerWindow":
         from .app import PoseViewerWindow
         return PoseViewerWindow
+    elif name == "detect_rowing_strokes":
+        from .stroke_detector import detect_rowing_strokes
+        return detect_rowing_strokes
+    elif name == "StrokeAnalysisResult":
+        from .stroke_detector import StrokeAnalysisResult
+        return StrokeAnalysisResult
+    elif name == "StrokeEvent":
+        from .stroke_detector import StrokeEvent
+        return StrokeEvent
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -32,6 +41,9 @@ __all__ = [
     "FrameData",
     "SKELETON_MODELS",
     "PoseViewerWindow",
+    "detect_rowing_strokes",
+    "StrokeAnalysisResult",
+    "StrokeEvent",
     "__version__",
 ]
 
