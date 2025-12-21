@@ -20,7 +20,7 @@ pip install pose2d-viewer
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/pose2d-viewer.git
+git clone https://github.com/hunminkim98/2DPoseViewer.git
 cd pose2d-viewer
 pip install -e .
 ```
