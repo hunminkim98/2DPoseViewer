@@ -14,7 +14,7 @@ from scipy.ndimage import gaussian_filter1d
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QStatusBar, QSplitter
+    QFileDialog, QStatusBar, QSplitter, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeyEvent
@@ -133,6 +133,12 @@ class PoseViewerWindow(QMainWindow):
         open_action = file_menu.addAction("폴더 열기")
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._open_folder)
+        
+        file_menu.addSeparator()
+        
+        export_action = file_menu.addAction("선택된 Person 내보내기")
+        export_action.setShortcut("Ctrl+E")
+        export_action.triggered.connect(self._export_person_json)
         
         file_menu.addSeparator()
         
@@ -450,6 +456,99 @@ class PoseViewerWindow(QMainWindow):
         self.control_panel.set_filter_applied(False)
         self._load_current_frame()
         self.status_bar.showMessage("✓ 원본 데이터로 복원됨")
+    
+    def _export_person_json(self):
+        """선택된 person 데이터를 JSON으로 저장"""
+        # 데이터 확인
+        if not self.all_frames_data:
+            QMessageBox.warning(self, "경고", "먼저 데이터를 로드해주세요.")
+            return
+        
+        # 선택된 person 확인
+        selected_person = self.canvas.selected_person
+        if selected_person < 0:
+            QMessageBox.warning(self, "경고", "먼저 Person을 선택해주세요.\n(bbox를 클릭하거나 컨트롤 패널에서 선택)")
+            return
+        
+        # 저장 폴더 선택
+        output_folder = QFileDialog.getExistingDirectory(
+            self, "저장할 폴더 선택", "",
+            QFileDialog.Option.ShowDirsOnly
+        )
+        
+        if not output_folder:
+            return
+        
+        # 사용할 데이터 소스 결정
+        if self.is_filtered and self.filtered_frames_data:
+            frames_data = self.filtered_frames_data
+            data_source = "필터링된 데이터"
+        else:
+            frames_data = self.all_frames_data
+            data_source = "원본 데이터"
+        
+        self.status_bar.showMessage(f"JSON 내보내기 중... (Person {selected_person}, {data_source})")
+        QApplication.processEvents()
+        
+        try:
+            saved_count = 0
+            skipped_count = 0
+            
+            for frame_idx, frame_data in enumerate(frames_data):
+                # 해당 프레임에 선택된 person이 없으면 건너뜀
+                if selected_person >= len(frame_data.people):
+                    skipped_count += 1
+                    continue
+                
+                person = frame_data.people[selected_person]
+                
+                # keypoints를 OpenPose 형식으로 변환 [x1, y1, c1, x2, y2, c2, ...]
+                pose_keypoints_2d = []
+                for kp in person.keypoints:
+                    pose_keypoints_2d.extend([kp.x, kp.y, kp.confidence])
+                
+                # person_id 결정: 원본이 -1이면 선택된 index 사용, 아니면 원본 유지
+                if person.person_id == -1:
+                    export_person_id = selected_person
+                else:
+                    export_person_id = person.person_id
+                
+                # 원본 JSON 형식으로 구성
+                output_data = {
+                    "people": [{
+                        "person_id": [export_person_id],
+                        "pose_keypoints_2d": pose_keypoints_2d
+                    }]
+                }
+                
+                # 원본 파일명 사용
+                original_filename = os.path.basename(self.frame_files[frame_idx])
+                output_path = os.path.join(output_folder, original_filename)
+                
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(output_data, f, indent=2)
+                
+                saved_count += 1
+            
+            # 완료 메시지
+            message = f"✓ {saved_count}개 파일 저장 완료 (Person {selected_person})"
+            if skipped_count > 0:
+                message += f" ({skipped_count}개 프레임 건너뜀)"
+            self.status_bar.showMessage(message)
+            
+            QMessageBox.information(
+                self, "저장 완료",
+                f"저장 위치: {output_folder}\n"
+                f"저장된 파일: {saved_count}개\n"
+                f"건너뛴 프레임: {skipped_count}개\n"
+                f"데이터 소스: {data_source}"
+            )
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "오류", f"저장 중 오류 발생: {str(e)}")
+            self.status_bar.showMessage(f"⚠ 저장 오류: {e}")
     
     def _analyze_rowing_stroke(self):
         """조정 스트로크 분석 실행"""

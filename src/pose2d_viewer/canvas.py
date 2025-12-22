@@ -327,6 +327,9 @@ class PoseCanvas(QWidget):
         painter.drawRect(int(x_min), int(y_min), int(width), int(height))
         
         label_text = f"Person {person_idx}"
+        # person_id가 -1이 아니면 실제 ID 표시
+        if person.person_id != -1:
+            label_text = f"Person {person.person_id}"
         font = QFont("Segoe UI", 10, QFont.Weight.Bold)
         painter.setFont(font)
         
