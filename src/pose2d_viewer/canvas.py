@@ -54,6 +54,12 @@ class PoseCanvas(QWidget):
         # 스타일 설정
         self.setMinimumSize(800, 600)
         self.setStyleSheet("background-color: #1a1a2e;")
+        
+        # auto-fit 변환 파라미터
+        self._current_scale: float = 1.0
+        self._current_offset_x: float = 0.0
+        self._current_offset_y: float = 0.0
+        self._fixed_bounds: Optional[Tuple[float, float, float, float]] = None  # (min_x, max_x, min_y, max_y)
     
     def _get_person_color(self, person_idx: int) -> QColor:
         """사람 인덱스에 따라 고유한 색상 생성 (황금비 사용)"""
@@ -196,6 +202,72 @@ class PoseCanvas(QWidget):
             self.setCursor(Qt.CursorShape.ArrowCursor)
             self.update()
     
+    def set_fixed_bounds(self, min_x: float, max_x: float, min_y: float, max_y: float):
+        """전체 데이터의 고정 바운딩 박스 설정 (폴더 로드 시 호출)"""
+        self._fixed_bounds = (min_x, max_x, min_y, max_y)
+    
+    def clear_fixed_bounds(self):
+        """고정 바운딩 박스 초기화"""
+        self._fixed_bounds = None
+    
+    def _calculate_transform(self) -> Tuple[float, float, float]:
+        """데이터를 캔버스에 맞추기 위한 변환 파라미터 계산 (scale, offset_x, offset_y)"""
+        # 고정 바운딩 박스가 있으면 사용
+        if self._fixed_bounds:
+            data_min_x, data_max_x, data_min_y, data_max_y = self._fixed_bounds
+        else:
+            # 고정 바운딩 박스가 없으면 현재 프레임 기준으로 계산 (폴백)
+            if not self.frame_data or not self.frame_data.people:
+                return 1.0, 0.0, 0.0
+            
+            all_x = []
+            all_y = []
+            for person in self.frame_data.people:
+                if self.selected_person >= 0 and self.frame_data.people.index(person) != self.selected_person:
+                    continue
+                for kp in person.keypoints:
+                    if self._is_valid_confidence(kp.confidence) and kp.confidence >= self.confidence_threshold:
+                        if kp.x > 0 and kp.y > 0 and self._is_valid_coord(kp.x, kp.y):
+                            all_x.append(kp.x)
+                            all_y.append(kp.y)
+            
+            if len(all_x) < 2 or len(all_y) < 2:
+                return 1.0, 0.0, 0.0
+            
+            data_min_x, data_max_x = min(all_x), max(all_x)
+            data_min_y, data_max_y = min(all_y), max(all_y)
+        
+        data_width = data_max_x - data_min_x
+        data_height = data_max_y - data_min_y
+        
+        if data_width <= 0 or data_height <= 0:
+            return 1.0, 0.0, 0.0
+        
+        # 캔버스 크기 (여백 포함)
+        margin = 40
+        canvas_width = self.width() - 2 * margin
+        canvas_height = self.height() - 2 * margin
+        
+        if canvas_width <= 0 or canvas_height <= 0:
+            return 1.0, 0.0, 0.0
+        
+        # 스케일 계산 (비율 유지)
+        scale_x = canvas_width / data_width
+        scale_y = canvas_height / data_height
+        scale = min(scale_x, scale_y)
+        
+        # 중앙 정렬을 위한 오프셋 계산
+        scaled_width = data_width * scale
+        scaled_height = data_height * scale
+        offset_x = margin + (canvas_width - scaled_width) / 2 - data_min_x * scale
+        offset_y = margin + (canvas_height - scaled_height) / 2 - data_min_y * scale
+        
+        return scale, offset_x, offset_y
+    
+    def _transform_point(self, x: float, y: float, scale: float, offset_x: float, offset_y: float) -> Tuple[int, int]:
+        """좌표 변환"""
+        return int(x * scale + offset_x), int(y * scale + offset_y)
+    
     def paintEvent(self, event):
         """캔버스 렌더링"""
         painter = QPainter(self)
@@ -213,6 +285,9 @@ class PoseCanvas(QWidget):
                                "JSON 폴더를 불러와주세요")
                 return
             
+            # 변환 파라미터 계산
+            self._current_scale, self._current_offset_x, self._current_offset_y = self._calculate_transform()
+            
             for idx, person in enumerate(self.frame_data.people):
                 if self.selected_person >= 0 and idx != self.selected_person:
                     continue
@@ -225,6 +300,9 @@ class PoseCanvas(QWidget):
     def _draw_person(self, painter: QPainter, person: Person, person_idx: int):
         """한 사람의 포즈 그리기"""
         keypoints = person.keypoints
+        scale = self._current_scale
+        offset_x = self._current_offset_x
+        offset_y = self._current_offset_y
         
         if self.show_skeleton:
             for parent_id, child_id, part in self.connections:
@@ -250,9 +328,13 @@ class PoseCanvas(QWidget):
                 if not self._is_valid_coord(kp1.x, kp1.y) or not self._is_valid_coord(kp2.x, kp2.y):
                     continue
                 
+                # 좌표 변환 적용
+                x1, y1 = self._transform_point(kp1.x, kp1.y, scale, offset_x, offset_y)
+                x2, y2 = self._transform_point(kp2.x, kp2.y, scale, offset_x, offset_y)
+                
                 pen = QPen(color, self.skeleton_width)
                 painter.setPen(pen)
-                painter.drawLine(int(kp1.x), int(kp1.y), int(kp2.x), int(kp2.y))
+                painter.drawLine(x1, y1, x2, y2)
         
         if self.show_keypoints:
             for kp_idx, kp in enumerate(keypoints):
@@ -270,9 +352,12 @@ class PoseCanvas(QWidget):
                 if not self._is_valid_coord(kp.x, kp.y):
                     continue
                 
+                # 좌표 변환 적용
+                tx, ty = self._transform_point(kp.x, kp.y, scale, offset_x, offset_y)
+                
                 painter.setPen(QPen(color, 2))
                 painter.setBrush(QBrush(color))
-                painter.drawEllipse(int(kp.x) - radius, int(kp.y) - radius, 
+                painter.drawEllipse(tx - radius, ty - radius, 
                                    radius * 2, radius * 2)
                 
                 if self.show_labels and kp_idx in self.keypoint_names:
@@ -280,18 +365,23 @@ class PoseCanvas(QWidget):
                     label_color.setAlpha(self.label_opacity)
                     painter.setPen(label_color)
                     painter.setFont(QFont("Segoe UI", self.label_font_size))
-                    painter.drawText(int(kp.x) + radius + 2, int(kp.y), 
+                    painter.drawText(tx + radius + 2, ty, 
                                    self.keypoint_names[kp_idx])
     
     def _draw_bbox(self, painter: QPainter, person: Person, person_idx: int):
         """사람 주변에 bounding box와 ID 그리기"""
         keypoints = person.keypoints
+        scale = self._current_scale
+        offset_x = self._current_offset_x
+        offset_y = self._current_offset_y
         
         valid_points = []
         for kp in keypoints:
             if self._is_valid_confidence(kp.confidence) and kp.confidence >= self.confidence_threshold:
                 if kp.x > 0 and kp.y > 0:
-                    valid_points.append((kp.x, kp.y))
+                    # 변환된 좌표 사용
+                    tx, ty = self._transform_point(kp.x, kp.y, scale, offset_x, offset_y)
+                    valid_points.append((tx, ty))
         
         if len(valid_points) < 2:
             return

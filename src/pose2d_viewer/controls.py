@@ -255,8 +255,8 @@ class ControlPanel(QWidget):
         
         # 사람 선택
         person_layout = QHBoxLayout()
-        person_label = QLabel("Person ID:")
-        person_label.setStyleSheet("color: #e0e0e0;")
+        self.person_id_label = QLabel("Person ID:")
+        self.person_id_label.setStyleSheet("color: #e0e0e0;")
         
         self.person_spin = QSpinBox()
         self.person_spin.setRange(-1, 10)
@@ -265,7 +265,7 @@ class ControlPanel(QWidget):
         self.person_spin.valueChanged.connect(lambda v: self.person_selected.emit(v))
         self.person_spin.setStyleSheet(self._get_spinbox_style())
         
-        person_layout.addWidget(person_label)
+        person_layout.addWidget(self.person_id_label)
         person_layout.addWidget(self.person_spin)
         person_layout.addStretch()
         filter_layout.addLayout(person_layout)

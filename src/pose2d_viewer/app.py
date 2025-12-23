@@ -14,7 +14,7 @@ from scipy.ndimage import gaussian_filter1d
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QStatusBar, QSplitter, QMessageBox
+    QFileDialog, QStatusBar, QSplitter, QMessageBox, QStackedWidget
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeyEvent
@@ -25,6 +25,7 @@ from .controls import PlaybackBar, ControlPanel
 from .constants import SKELETON_MODELS
 from .stroke_detector import detect_rowing_strokes
 from .stroke_dialog import StrokeAnalysisDialog
+from .multi_view import MultiViewContainer
 
 
 class PoseViewerWindow(QMainWindow):
@@ -76,8 +77,18 @@ class PoseViewerWindow(QMainWindow):
         content_layout.setContentsMargins(10, 10, 10, 10)
         content_layout.setSpacing(10)
         
-        # 캔버스
+        # 캔버스 (싱글 뷰)
         self.canvas = PoseCanvas()
+        
+        # 멀티 뷰 컨테이너
+        self.multi_view_container = MultiViewContainer()
+        
+        # 스택 위젯 (싱글뷰/멀티뷰 전환용)
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self.canvas)  # index 0: 싱글뷰
+        self.view_stack.addWidget(self.multi_view_container)  # index 1: 멀티뷰
+        self.view_stack.setCurrentIndex(0)
+        self.is_multi_view_mode = False
         
         # 컨트롤 패널
         self.control_panel = ControlPanel()
@@ -85,7 +96,7 @@ class PoseViewerWindow(QMainWindow):
         
         # 스플리터
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.canvas)
+        splitter.addWidget(self.view_stack)
         splitter.addWidget(self.control_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
@@ -153,6 +164,14 @@ class PoseViewerWindow(QMainWindow):
         rowing_action.setShortcut("Ctrl+R")
         rowing_action.triggered.connect(self._analyze_rowing_stroke)
         
+        # 보기 메뉴
+        view_menu = menubar.addMenu("보기")
+        
+        self.multi_view_action = view_menu.addAction("Multi View 모드")
+        self.multi_view_action.setShortcut("Ctrl+M")
+        self.multi_view_action.setCheckable(True)
+        self.multi_view_action.triggered.connect(self._toggle_multi_view)
+        
     def _connect_signals(self):
         # 컨트롤 패널 시그널
         self.control_panel.confidence_changed.connect(self.canvas.set_confidence_threshold)
@@ -181,6 +200,33 @@ class PoseViewerWindow(QMainWindow):
         
         # 캔버스 시그널
         self.canvas.person_clicked.connect(self._on_person_clicked)
+        self.multi_view_container.person_selected.connect(self._on_person_clicked)
+        
+        # 인물 선택 변경 시 멀티뷰에도 적용 (이 부분은 싱글뷰 설정 시에만 의미 있도록 유지하거나 제거 가능)
+        # 멀티뷰에서 전역 제어를 원할 수도 있으므로 일단 연결은 유지하되, 각 패널 클릭은 독립적임
+        self.control_panel.person_selected.connect(self._on_global_person_change)
+        
+        # 멀티뷰 제어를 위해 컨트롤 패널 시그널을 멀티뷰 컨테이너에도 연결
+        self.control_panel.confidence_changed.connect(self.multi_view_container.set_confidence_threshold)
+        self.control_panel.show_keypoints_changed.connect(self.multi_view_container.set_show_keypoints)
+        self.control_panel.show_skeleton_changed.connect(self.multi_view_container.set_show_skeleton)
+        self.control_panel.show_labels_changed.connect(self.multi_view_container.set_show_labels)
+        self.control_panel.show_bbox_changed.connect(self.multi_view_container.set_show_bbox)
+        self.control_panel.model_changed.connect(self.multi_view_container.set_skeleton_model)
+        
+        # 시각화 옵션
+        self.control_panel.keypoint_size_changed.connect(self.multi_view_container.set_keypoint_size)
+        self.control_panel.keypoint_opacity_changed.connect(self.multi_view_container.set_keypoint_opacity)
+        self.control_panel.skeleton_width_changed.connect(self.multi_view_container.set_skeleton_width)
+        self.control_panel.skeleton_opacity_changed.connect(self.multi_view_container.set_skeleton_opacity)
+        self.control_panel.label_size_changed.connect(self.multi_view_container.set_label_font_size)
+        self.control_panel.label_opacity_changed.connect(self.multi_view_container.set_label_opacity)
+        self.control_panel.bbox_width_changed.connect(self.multi_view_container.set_bbox_width)
+        self.control_panel.bbox_opacity_changed.connect(self.multi_view_container.set_bbox_opacity)
+        
+        # 필터링
+        self.control_panel.filter_apply_requested.connect(self.multi_view_container.apply_filter)
+        self.control_panel.filter_revert_requested.connect(self.multi_view_container.revert_filter)
         
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Space:
@@ -198,8 +244,22 @@ class PoseViewerWindow(QMainWindow):
             super().keyPressEvent(event)
     
     def _on_person_clicked(self, person_idx: int):
+        """캔버스 클릭 시 호출 (싱글뷰/멀티뷰 공통)"""
         self.control_panel.person_spin.setValue(person_idx)
         self.canvas.set_selected_person(person_idx)
+        # 멀티뷰 강제 동기화(set_selected_person)는 하지 않음으로써 독립 선택 보장
+        if person_idx >= 0:
+            self.status_bar.showMessage(f"✓ Person {person_idx} 선택됨")
+        else:
+            self.status_bar.showMessage("✓ 선택 해제")
+
+    def _on_global_person_change(self, person_idx: int):
+        """컨트롤 패널에서 인물 변경 시 호출 (필요 시 전체 적용용)"""
+        self.canvas.set_selected_person(person_idx)
+        # 사용자가 컨트롤 패널 스핀박스를 직접 조작하면 여전히 전체에 적용될 수 있으나 
+        # 캔버스 직접 클릭은 독립적으로 유지됨.
+        # 만약 컨트롤 패널 조작마저도 독립적이어야 한다면 이 로직을 비활성화.
+        pass
             
     def _open_folder(self):
         folder = QFileDialog.getExistingDirectory(
@@ -225,14 +285,31 @@ class PoseViewerWindow(QMainWindow):
         self.is_filtered = False
         self.control_panel.set_filter_applied(False)
         
+        # 전체 바운딩 박스 계산을 위한 변수
+        all_x = []
+        all_y = []
+        
         for idx, file_path in enumerate(files):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 frame_data = self._parse_frame_data(data, idx)
                 self.all_frames_data.append(frame_data)
+                
+                # 전체 바운딩 박스 계산을 위해 유효한 좌표 수집
+                for person in frame_data.people:
+                    for kp in person.keypoints:
+                        if kp.confidence >= 0.3 and kp.x > 0 and kp.y > 0:
+                            all_x.append(kp.x)
+                            all_y.append(kp.y)
             except Exception:
                 self.all_frames_data.append(FrameData(frame_number=idx, people=[]))
+        
+        # 전체 프레임 기반 고정 바운딩 박스 설정
+        if len(all_x) >= 2 and len(all_y) >= 2:
+            self.canvas.set_fixed_bounds(min(all_x), max(all_x), min(all_y), max(all_y))
+        else:
+            self.canvas.clear_fixed_bounds()
         
         self.playback_bar.set_total_frames(len(files))
         self._load_current_frame()
@@ -459,11 +536,6 @@ class PoseViewerWindow(QMainWindow):
     
     def _export_person_json(self):
         """선택된 person 데이터를 JSON으로 저장"""
-        # 데이터 확인
-        if not self.all_frames_data:
-            QMessageBox.warning(self, "경고", "먼저 데이터를 로드해주세요.")
-            return
-        
         # 선택된 person 확인
         selected_person = self.canvas.selected_person
         if selected_person < 0:
@@ -471,49 +543,89 @@ class PoseViewerWindow(QMainWindow):
             return
         
         # 저장 폴더 선택
-        output_folder = QFileDialog.getExistingDirectory(
-            self, "저장할 폴더 선택", "",
+        parent_folder = QFileDialog.getExistingDirectory(
+            self, "내보낼 결과 폴더 선택", "",
             QFileDialog.Option.ShowDirsOnly
         )
-        
-        if not output_folder:
+        if not parent_folder:
             return
-        
-        # 사용할 데이터 소스 결정
-        if self.is_filtered and self.filtered_frames_data:
-            frames_data = self.filtered_frames_data
-            data_source = "필터링된 데이터"
+
+        # 멀티뷰 모드 분기
+        if self.is_multi_view_mode:
+            self._export_multi_view_person(parent_folder, selected_person)
         else:
-            frames_data = self.all_frames_data
-            data_source = "원본 데이터"
+            # 기존 싱글뷰 저장
+            if not self.all_frames_data:
+                QMessageBox.warning(self, "경고", "먼저 데이터를 로드해주세요.")
+                return
+            output_folder = os.path.join(parent_folder, f"Person_{selected_person}")
+            os.makedirs(output_folder, exist_ok=True)
+            self._perform_json_export(self.all_frames_data, self.filtered_frames_data, 
+                                     self.frame_files, output_folder, selected_person,
+                                     is_filtered=(self.is_filtered and self.filtered_frames_data))
+
+    def _export_multi_view_person(self, parent_folder: str, global_selected_person: int):
+        """멀티뷰의 모든 패널 데이터를 각각의 선택된 ID로 내보내기"""
+        active_panels = [p for p in self.multi_view_container.view_panels if p.folder_path]
+        if not active_panels:
+            QMessageBox.warning(self, "경고", "멀티뷰에 로드된 폴더가 없습니다.")
+            return
+
+        total_saved = 0
+        exported_info = []
         
-        self.status_bar.showMessage(f"JSON 내보내기 중... (Person {selected_person}, {data_source})")
-        QApplication.processEvents()
-        
-        try:
-            saved_count = 0
-            skipped_count = 0
+        for panel in active_panels:
+            # 각 패널의 캔버스에서 개별적으로 선택된 ID 가져오기
+            panel_selected_person = panel.canvas.selected_person
             
+            # 아무도 선택 안 된 패널은 건너뛰거나 전체 내보낼지 결정 (요구사항상 선택된 인물만)
+            if panel_selected_person < 0:
+                continue
+                
+            folder_name = os.path.basename(panel.folder_path)
+            output_folder = os.path.join(parent_folder, f"Person_{panel_selected_person}_{folder_name}")
+            os.makedirs(output_folder, exist_ok=True)
+            
+            count = self._perform_json_export(panel.all_frames_data, panel.filtered_frames_data, 
+                                            panel.frame_files, output_folder, panel_selected_person, 
+                                            is_filtered=panel.is_filtered, update_status=False)
+            total_saved += count
+            exported_info.append(f"- {folder_name}: Person {panel_selected_person}")
+            
+        if not exported_info:
+            QMessageBox.warning(self, "경고", "선택된 인물이 있는 뷰가 없습니다.")
+            return
+
+        info_text = "\n".join(exported_info)
+        QMessageBox.information(self, "저장 완료", 
+                              f"각 뷰에서 선택된 인물 데이터를 내보냈습니다.\n\n"
+                              f"{info_text}\n\n"
+                              f"총 저장된 파일: {total_saved}개\n"
+                              f"저장 위치: {parent_folder}")
+
+    def _perform_json_export(self, all_data, filtered_data, files, output_folder, selected_person, 
+                            is_filtered=False, update_status=True):
+        """실제 데이터 저장 로직"""
+        frames_data = filtered_data if (is_filtered and filtered_data) else all_data
+        data_source = "필터링된 데이터" if is_filtered else "원본 데이터"
+            
+        if update_status:
+            self.status_bar.showMessage(f"JSON 내보내기 중... (Person {selected_person}, {data_source})")
+            QApplication.processEvents()
+            
+        saved_count = 0
+        try:
             for frame_idx, frame_data in enumerate(frames_data):
-                # 해당 프레임에 선택된 person이 없으면 건너뜀
                 if selected_person >= len(frame_data.people):
-                    skipped_count += 1
                     continue
                 
                 person = frame_data.people[selected_person]
-                
-                # keypoints를 OpenPose 형식으로 변환 [x1, y1, c1, x2, y2, c2, ...]
                 pose_keypoints_2d = []
                 for kp in person.keypoints:
                     pose_keypoints_2d.extend([kp.x, kp.y, kp.confidence])
                 
-                # person_id 결정: 원본이 -1이면 선택된 index 사용, 아니면 원본 유지
-                if person.person_id == -1:
-                    export_person_id = selected_person
-                else:
-                    export_person_id = person.person_id
+                export_person_id = selected_person if person.person_id == -1 else person.person_id
                 
-                # 원본 JSON 형식으로 구성
                 output_data = {
                     "people": [{
                         "person_id": [export_person_id],
@@ -521,34 +633,20 @@ class PoseViewerWindow(QMainWindow):
                     }]
                 }
                 
-                # 원본 파일명 사용
-                original_filename = os.path.basename(self.frame_files[frame_idx])
+                original_filename = os.path.basename(files[frame_idx])
                 output_path = os.path.join(output_folder, original_filename)
                 
                 with open(output_path, 'w', encoding='utf-8') as f:
                     json.dump(output_data, f, indent=2)
-                
                 saved_count += 1
-            
-            # 완료 메시지
-            message = f"✓ {saved_count}개 파일 저장 완료 (Person {selected_person})"
-            if skipped_count > 0:
-                message += f" ({skipped_count}개 프레임 건너뜀)"
-            self.status_bar.showMessage(message)
-            
-            QMessageBox.information(
-                self, "저장 완료",
-                f"저장 위치: {output_folder}\n"
-                f"저장된 파일: {saved_count}개\n"
-                f"건너뛴 프레임: {skipped_count}개\n"
-                f"데이터 소스: {data_source}"
-            )
-            
+                
+            if update_status:
+                self.status_bar.showMessage(f"✓ {saved_count}개 파일 저장 완료 (Person {selected_person})")
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(self, "오류", f"저장 중 오류 발생: {str(e)}")
-            self.status_bar.showMessage(f"⚠ 저장 오류: {e}")
+            if update_status:
+                QMessageBox.critical(self, "오류", f"저장 중 오류 발생: {str(e)}")
+            
+        return saved_count
     
     def _analyze_rowing_stroke(self):
         """조정 스트로크 분석 실행"""
@@ -630,6 +728,26 @@ class PoseViewerWindow(QMainWindow):
             import traceback
             traceback.print_exc()
             self.status_bar.showMessage(f"⚠ 분석 오류: {e}")
+    
+    def _toggle_multi_view(self, checked: bool):
+        """Multi View 모드 전환"""
+        if checked:
+            self.view_stack.setCurrentIndex(1)
+            self.is_multi_view_mode = True
+            # 멀티뷰 모드 활성화 시 레이블 변경 (독립 선택임을 명시)
+            self.control_panel.person_id_label.setText("Last Selected ID:")
+            self.control_panel.person_id_label.setStyleSheet("color: #FFD93D; font-weight: bold;")
+            
+            # 멀티뷰 모드 활성화 시 현재 컨트롤 패널의 설정을 모든 뷰에 동기화
+            self.multi_view_container.set_skeleton_model(self.control_panel.model_combo.currentText())
+            self.status_bar.showMessage("✓ Multi View 모드 활성화")
+        else:
+            self.view_stack.setCurrentIndex(0)
+            self.is_multi_view_mode = False
+            # 원복
+            self.control_panel.person_id_label.setText("Person ID:")
+            self.control_panel.person_id_label.setStyleSheet("color: #e0e0e0; font-weight: normal;")
+            self.status_bar.showMessage("✓ Single View 모드 활성화")
 
 
 def main():
